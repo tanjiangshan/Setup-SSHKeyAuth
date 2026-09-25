@@ -1,0 +1,11 @@
+# tool backups
+*.toolbak-*
+
+# editor / os
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# local test artifacts
+*.xshf.bak
