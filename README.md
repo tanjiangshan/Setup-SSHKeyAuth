@@ -14,6 +14,26 @@
 
 ## 快速开始
 
+### 图形界面（推荐）
+
+**双击 `启动工具.bat`**（或运行 `powershell -ExecutionPolicy Bypass -STA -File Setup-SSHKeyAuthGui.ps1`）：
+
+```
+┌─ SSH 免密登录配置工具 ─────────────────────┐
+│ [ 一键配置免密登录 ]   [ 一键生成账号密码文档 ] │
+│ ☐跳过服务器部署 ☐跳过MobaXterm ☐跳过Xshell    │
+│ ┌─ 运行日志（实时滚动，彩色分级）────────────┐ │
+│ └───────────────────────────────────────┘ │
+│ 状态栏: 就绪 / 运行中 / 完成                  │
+└────────────────────────────────────────────┘
+```
+
+- **一键配置免密登录**：自动发现目标 → 弹窗勾选服务器 → 提取凭据 → 部署公钥 → 配置 MobaXterm/Xshell → 报告
+- **一键生成账号密码文档**：汇总本机所有 SSH 连接/会话的 IP / 用户名 / 密码，弹窗选择保存位置，
+  生成 Markdown 表格（解不开的密码会标注 `无法自动解密 (MobaXterm v25+)`）
+
+### 命令行
+
 ```powershell
 # 方式 1：自动发现当前已建立的连接，交互式选择要处理哪些
 .\Setup-SSHKeyAuth.ps1
@@ -26,9 +46,24 @@
 
 # 修改 MobaXterm 配置需要先关闭 MobaXterm，-Force 表示自动关闭（会断开现有终端会话）
 .\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10 -Force
+
+# 仅生成凭据清单文档（同 GUI 第二个按钮）
+.\Setup-SSHKeyAuth.ps1 -ExportCred "D:\creds.md"
 ```
 
 > 如果遇到执行策略限制：`powershell -ExecutionPolicy Bypass -File .\Setup-SSHKeyAuth.ps1 -All`
+
+## 仓库结构
+
+```
+Setup-SSHKeyAuth/
+├── Setup-SSHKeyAuth.ps1        # 命令行入口
+├── Setup-SSHKeyAuthCore.ps1    # 核心函数库（发现/解密/密钥/客户端配置/主流程）
+├── Setup-SSHKeyAuthGui.ps1     # 图形界面入口 (WinForms, 零依赖)
+├── 启动工具.bat                 # 双击启动图形界面
+├── README.md
+└── LICENSE
+```
 
 ## 参数说明
 
@@ -41,6 +76,7 @@
 | `-SkipServer` | 跳过服务器端公钥部署（只配置客户端） |
 | `-SkipMoba` | 跳过 MobaXterm 配置 |
 | `-SkipXshell` | 跳过 Xshell 配置 |
+| `-ExportCred <path>` | 仅生成凭据清单 Markdown 文档后退出（path 可为目录） |
 
 不带 `-Ip` / `-All` 且存在活跃连接时，会列出连接清单让你输入序号选择（回车 = 全选）。
 
@@ -60,7 +96,26 @@
                       文档\NetSarang Computer\<版本>\SECSH\UserKeys\id_ed25519.pri
                    b. 在 Sessions\ 目录生成 <ip>.xshf 会话（公钥认证方式）
                    c. 确保 Xagent 已运行（Xshell 免密依赖它）
- ⑦ 验证报告        逐台实测密钥登录，输出最终结果表
+  ⑦ 验证报告        逐台实测密钥登录，输出最终结果表
+```
+
+### 凭据文档功能（GUI 第二个按钮 / `-ExportCred`）
+
+汇总**活跃连接 + MobaXterm 书签 + MobaXterm 凭据库 + Xshell 会话**中所有主机的
+IP / 端口 / 用户名 / 密码（逐一尝试解密），生成 Markdown 表格：
+
+```markdown
+# SSH 连接凭据
+- 生成时间: 2026-09-26 19:11:27
+- 共 **5** 台主机, 已解密密码 **0** 个, 当前已连接 **1** 台
+
+> **安全警告: 本文件包含明文密码, 请妥善保管!**
+> 严禁提交到代码仓库 / 网盘 / 聊天工具; 建议存放在加密分区或密码管理器中, 用完即删。
+
+| IP | 端口 | 用户名 | 密码 | 来源 | 状态 |
+|----|------|--------|------|------|------|
+| 192.168.1.10 | 22 | root | `xxxxxx` | MobaXterm / Xshell | 已连接 |
+| 192.168.1.11 | 22 | root | ⚠ 无法自动解密 (MobaXterm v25+) | MobaXterm | 未连接 |
 ```
 
 ### 密码提取能力（尽力而为）
