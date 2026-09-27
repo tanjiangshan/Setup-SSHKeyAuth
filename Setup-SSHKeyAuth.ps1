@@ -53,11 +53,13 @@ $targetSelector = {
     Write-Host ""
     Write-Host "  detect targets: (input numbers, comma separated, or Enter = all)" -ForegroundColor Cyan
     for($i=0; $i -lt $candidates.Count; $i++){
-        Write-Host ("    [{0}] {1}  ({2})" -f ($i+1), $candidates[$i].Ip, $candidates[$i].Tool)
+        $c = $candidates[$i]
+        $st = if($c.Connected){ 'connected' } else { 'stored session' }
+        Write-Host ("    [{0}] {1}  ({2}, {3})" -f ($i+1), $c.Ip, $c.Tool, $st)
     }
     $ans = Read-Host "  select"
     if([string]::IsNullOrWhiteSpace($ans)){ return @($candidates | ForEach-Object { $_.Ip }) }
-    return @($ans -split '[,\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { $candidates[[int]$_ - 1].Ip })
+    return @($ans -split '[,\s]+' | Where-Object { $_ -match '^\d+$' -and [int]$_ -ge 1 -and [int]$_ -le $candidates.Count } | ForEach-Object { $candidates[[int]$_ - 1].Ip })
 }
 $pwPrompter = {
     param($ip, $user)

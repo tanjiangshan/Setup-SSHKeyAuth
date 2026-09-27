@@ -175,7 +175,8 @@ $script:SetupBody = {
             $ips = @()
             foreach($c in $candidates){
                 $ips += $c.Ip
-                [void]$clb.Items.Add(('{0}    ({1})' -f $c.Ip, $c.Tool), $true)
+                $st = if($c.Connected){ '已连接' } else { '未连接' }
+                [void]$clb.Items.Add(('{0}    ({1}, {2})' -f $c.Ip, $c.Tool, $st), $true)
             }
             $btnAll = New-Object System.Windows.Forms.Button
             $btnAll.Text = '全选'

@@ -530,20 +530,29 @@ function Invoke-PasswordlessSetup{
     foreach($k in $xshPw.Keys){ Dim "xshell session: $k  user=$($xshPw[$k].User)" }
 
     # --- 2. 目标选择 ---
+    # 候选 = 活跃连接 + MobaXterm 存储会话 + Xshell 存储会话 (未连接的也列出, 标注状态)
     $chosenIps = @()
     if($TargetIps){ $chosenIps = $TargetIps }
-    elseif($All){ $chosenIps = @($active.Keys) + @($mobaSessions | ForEach-Object { $_.Host }) + @($xshPw.Keys | ForEach-Object { ($_ -split ':')[0] }) | Sort-Object -Unique }
-    elseif($active.Count -gt 0){
-        $candidates = @($active.Keys | Sort-Object | ForEach-Object { [pscustomobject]@{ Ip = $_; Tool = $active[$_] } })
-        if($TargetSelector){ $chosenIps = @(& $TargetSelector $candidates) }
-        else { $chosenIps = @($candidates | ForEach-Object { $_.Ip }) }
-    }
     else {
-        $cand = @($mobaSessions | ForEach-Object { $_.Host }) + @($xshPw.Keys | ForEach-Object { ($_ -split ':')[0] })
-        $cand = $cand | Sort-Object -Unique
-        if($cand.Count -eq 0){ Err "no target found. use -Ip <addr> or open connections first"; return $null }
-        $chosenIps = $cand
-        Warn "no active connection; will process all stored sessions: $($chosenIps -join ', ')"
+        $candMap = [ordered]@{}
+        foreach($ip in $active.Keys){
+            if(-not $candMap.Contains($ip)){ $candMap[$ip] = [pscustomobject]@{ Ip = $ip; Tool = $active[$ip]; Connected = $true } }
+        }
+        foreach($s in $mobaSessions){
+            if($s.Host -and -not $candMap.Contains($s.Host)){ $candMap[$s.Host] = [pscustomobject]@{ Ip = $s.Host; Tool = 'MobaXterm'; Connected = $false } }
+        }
+        foreach($k in $xshPw.Keys){
+            $ip = ($k -split ':')[0]
+            if($ip -and -not $candMap.Contains($ip)){ $candMap[$ip] = [pscustomobject]@{ Ip = $ip; Tool = 'Xshell'; Connected = $false } }
+        }
+        $candidates = @($candMap.Values | Sort-Object -Property @{Expression={-not $_.Connected}}, @{Expression={$_.Ip}})
+        if($candidates.Count -eq 0){ Err "no target found. use -Ip <addr> or open connections first"; return $null }
+        if($All -or -not $TargetSelector){
+            $chosenIps = @($candidates | ForEach-Object { $_.Ip })
+            if($active.Count -eq 0){ Warn "no active connection; will process all stored sessions: $($chosenIps -join ', ')" }
+        } else {
+            $chosenIps = @(& $TargetSelector $candidates)
+        }
     }
     $chosenIps = @($chosenIps | Where-Object { $_ -and $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object -Unique)
     if(-not $chosenIps){ Err "no valid target IP"; return $null }
