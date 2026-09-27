@@ -61,14 +61,51 @@ function Get-ActiveSshTargets{
 }
 
 # ==================================================== 2. MobaXterm 会话 ====
-function Find-MobaXtermIni{
+# 记住上次成功定位的 MobaXterm.ini 路径 (注册表), 便携版主进程未运行时仍可找到
+function Save-LastMobaIni([string]$Path){
+    try{
+        $rk = 'HKCU:\Software\Setup-SSHKeyAuth'
+        if(-not (Test-Path $rk)){ New-Item -Path $rk -Force | Out-Null }
+        Set-ItemProperty -Path $rk -Name 'LastMobaIni' -Value $Path
+    } catch { }
+}
+
+function Find-MobaXtermIni([scriptblock]$Prompter){
+    # 1) 正在运行的 MobaXterm 进程所在目录 (便携版)
     $p = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' } | Select-Object -First 1
     if($p -and $p.Path){
         $ini = Join-Path (Split-Path $p.Path) 'MobaXterm.ini'
-        if(Test-Path $ini){ return $ini }
+        if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
     }
+    # 2) 上次成功定位的路径 (缓存; 便携版主进程关闭后仍有效)
+    $cached = $null
+    try{ $cached = (Get-ItemProperty 'HKCU:\Software\Setup-SSHKeyAuth' -Name 'LastMobaIni' -ErrorAction SilentlyContinue).LastMobaIni } catch { }
+    if($cached -and (Test-Path $cached)){ return $cached }
+    # 3) 安装版默认位置
     $ini = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'MobaXterm\MobaXterm.ini'
-    if(Test-Path $ini){ return $ini }
+    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+    # 4) 浅层扫描常见根目录 (两层深度, 找 *MobaXterm* 目录)
+    $roots = @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:USERPROFILE 'Downloads'), 'C:\', 'D:\', 'E:\')
+    foreach($root in $roots){
+        if(-not $root -or -not (Test-Path $root)){ continue }
+        foreach($d1 in (Get-ChildItem $root -Directory -ErrorAction SilentlyContinue)){
+            if($d1.Name -like '*MobaXterm*'){
+                $ini = Join-Path $d1.FullName 'MobaXterm.ini'
+                if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+            }
+            foreach($d2 in (Get-ChildItem $d1.FullName -Directory -ErrorAction SilentlyContinue)){
+                if($d2.Name -like '*MobaXterm*'){
+                    $ini = Join-Path $d2.FullName 'MobaXterm.ini'
+                    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+                }
+            }
+        }
+    }
+    # 5) 兜底: 提示用户指定 (回调返回路径或 null)
+    if($Prompter){
+        $ans = & $Prompter
+        if($ans -and (Test-Path $ans)){ Save-LastMobaIni $ans; return $ans }
+    }
     return $null
 }
 
@@ -258,7 +295,8 @@ function Get-XshellStoredPasswords{
                     elseif($line -match '^UserName=(.*)$'){ $user_ = $Matches[1].Trim() }
                     elseif($line -match '^Password=(.+)$'){ $pw = $Matches[1].Trim() }
                 }
-                if($host_ -and $user_){
+                # 只要有 Host 即收录; UserName 可为空 (后续默认 root 或连接时输入)
+                if($host_){
                     $result["$host_`:$port"] = [pscustomobject]@{ User = $user_; EncPassword = $pw; Path = $f.FullName }
                 }
             } catch { }
@@ -487,6 +525,7 @@ function Ensure-Xagent{
     -TargetSelector    param($candidates) -> string[]   候选为 @{Ip;Tool} 对象数组
     -PasswordPrompter  param($ip,$user) -> string|null
     -ConfirmPrompter   param($message) -> bool
+    -MobaIniPrompter   param() -> string|null   自动定位 MobaXterm.ini 失败时让用户指定
   返回报告数组 (无有效目标/密钥失败时返回 $null)
 #>
 function Invoke-PasswordlessSetup{
@@ -501,7 +540,8 @@ function Invoke-PasswordlessSetup{
         [switch]$SkipXshell,
         [scriptblock]$TargetSelector,
         [scriptblock]$PasswordPrompter,
-        [scriptblock]$ConfirmPrompter
+        [scriptblock]$ConfirmPrompter,
+        [scriptblock]$MobaIniPrompter
     )
 
     Banner ""
@@ -516,7 +556,7 @@ function Invoke-PasswordlessSetup{
     } else {
         Warn "no established SSH connection found from MobaXterm/Xshell"
     }
-    $mobaIni = Find-MobaXtermIni
+    $mobaIni = Find-MobaXtermIni $MobaIniPrompter
     $mobaSessions = @()
     $mobaIniMap = $null
     if($mobaIni){
@@ -524,6 +564,8 @@ function Invoke-PasswordlessSetup{
         $mobaSessions = Read-MobaSessions $mobaIni
         $mobaIniMap = Read-IniFile $mobaIni
         foreach($s in $mobaSessions){ Dim "moba session: $($s.Host):$($s.Port)  login=$($s.Login)  key=$($s.KeyPath)" }
+    } elseif(-not $SkipMoba){
+        Warn "MobaXterm.ini not found - MobaXterm sessions/credentials skipped"
     }
     Info "scanning Xshell sessions ..."
     $xshPw = Get-XshellStoredPasswords
@@ -704,15 +746,17 @@ function Invoke-PasswordlessSetup{
   返回: @{Ip;Port;User;Password;PasswordStatus;Sources;Connected}[]
     PasswordStatus: decrypted | undecryptable | failed | none
 #>
-function Get-SshCredentialInventory{
+function Get-SshCredentialInventory([scriptblock]$MobaIniPrompter){
     Banner "scanning SSH connections and stored sessions ..."
     $active = Get-ActiveSshTargets
-    $mobaIni = Find-MobaXtermIni
+    $mobaIni = Find-MobaXtermIni $MobaIniPrompter
     $mobaSessions = @(); $mobaIniMap = $null
     if($mobaIni){
         Info "MobaXterm config: $mobaIni"
         $mobaSessions = Read-MobaSessions $mobaIni
         $mobaIniMap = Read-IniFile $mobaIni
+    } else {
+        Warn "MobaXterm.ini not found - MobaXterm sessions/credentials skipped"
     }
     $xshPw = Get-XshellStoredPasswords
     Info "found: $($active.Count) active connection(s), $($mobaSessions.Count) MobaXterm session(s), $($xshPw.Count) Xshell session(s)"

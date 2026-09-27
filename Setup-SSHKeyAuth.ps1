@@ -37,16 +37,6 @@ param(
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'Setup-SSHKeyAuthCore.ps1')
 
-# ---- 仅生成凭据文档模式 ----
-if($ExportCred){
-    $inv = Get-SshCredentialInventory
-    if(-not $inv -or $inv.Count -eq 0){ Err "no SSH connection or stored session found"; exit 1 }
-    if(Test-Path $ExportCred -PathType Container){ $ExportCred = Join-Path $ExportCred "SSH连接凭据_$(Get-Date -Format yyyyMMdd-HHmmss).md" }
-    Export-CredentialMarkdown $inv $ExportCred | Out-Null
-    Ok "credential document written: $ExportCred"
-    exit 0
-}
-
 # ---- 控制台版交互回调 ----
 $targetSelector = {
     param($candidates)
@@ -69,11 +59,28 @@ $confirmer = {
     param($message)
     return ((Read-Host "  $message (y/N)") -match '^[Yy]')
 }
+$mobaIniPrompter = {
+    Write-Host ""
+    Write-Host "  [!] 未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录)" -ForegroundColor Yellow
+    $p = Read-Host "  输入 MobaXterm.ini 完整路径 (Enter = 跳过 MobaXterm 支持)"
+    if($p -and (Test-Path $p)){ return $p }
+    return $null
+}
+
+# ---- 仅生成凭据文档模式 ----
+if($ExportCred){
+    $inv = Get-SshCredentialInventory $mobaIniPrompter
+    if(-not $inv -or $inv.Count -eq 0){ Err "no SSH connection or stored session found"; exit 1 }
+    if(Test-Path $ExportCred -PathType Container){ $ExportCred = Join-Path $ExportCred "SSH连接凭据_$(Get-Date -Format yyyyMMdd-HHmmss).md" }
+    Export-CredentialMarkdown $inv $ExportCred | Out-Null
+    Ok "credential document written: $ExportCred"
+    exit 0
+}
 
 # ---- 主流程 ----
 $report = Invoke-PasswordlessSetup -TargetIps $Ip -UserName $User -All:$All -ForceCloseMoba:([bool]$Force) `
     -SkipServer:$SkipServer -SkipMoba:$SkipMoba -SkipXshell:$SkipXshell `
-    -TargetSelector $targetSelector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer
+    -TargetSelector $targetSelector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer -MobaIniPrompter $mobaIniPrompter
 
 if($null -eq $report){ exit 1 }
 

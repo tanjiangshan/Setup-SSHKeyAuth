@@ -153,6 +153,18 @@ $script:SetupBody = {
         Add-Type -AssemblyName System.Drawing
         Set-LogSink { param($level,$msg) $Sync.LogQueue.Enqueue(@($level,$msg)) }
 
+        # MobaXterm.ini 定位失败时让用户手动选择文件
+        $mobaIniPrompter = {
+            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 支持.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            if($r -ne [System.Windows.Forms.DialogResult]::Yes){ return $null }
+            $ofd = New-Object System.Windows.Forms.OpenFileDialog
+            $ofd.Title = '选择 MobaXterm.ini'
+            $ofd.Filter = 'MobaXterm 配置 (MobaXterm.ini)|MobaXterm.ini|所有文件 (*.*)|*.*'
+            $ofd.FileName = 'MobaXterm.ini'
+            if($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){ return $ofd.FileName }
+            return $null
+        }
+
         # 目标选择对话框 (在后台线程上弹窗)
         $selector = {
             param($candidates)
@@ -252,7 +264,7 @@ $script:SetupBody = {
         $report = Invoke-PasswordlessSetup -TargetIps $TargetIps -UserName $UserName `
             -SkipServer:$SkipServer -SkipMoba:$SkipMoba -SkipXshell:$SkipXshell `
             -ForceCloseMoba $ForceCloseMoba `
-            -TargetSelector $selector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer
+            -TargetSelector $selector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer -MobaIniPrompter $mobaIniPrompter
         $Sync.Report = $report
     } catch {
         $Sync.LogQueue.Enqueue(@('ERR', "unhandled error: $($_.Exception.Message)"))
@@ -261,13 +273,25 @@ $script:SetupBody = {
     }
 }
 
-# 功能二: 生成凭据清单 (无交互)
+# 功能二: 生成凭据清单
 $script:DocBody = {
     param($CorePath, $Sync)
     try{
         . $CorePath
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
         Set-LogSink { param($level,$msg) $Sync.LogQueue.Enqueue(@($level,$msg)) }
-        $inv = Get-SshCredentialInventory
+        $mobaIniPrompter = {
+            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 部分.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            if($r -ne [System.Windows.Forms.DialogResult]::Yes){ return $null }
+            $ofd = New-Object System.Windows.Forms.OpenFileDialog
+            $ofd.Title = '选择 MobaXterm.ini'
+            $ofd.Filter = 'MobaXterm 配置 (MobaXterm.ini)|MobaXterm.ini|所有文件 (*.*)|*.*'
+            $ofd.FileName = 'MobaXterm.ini'
+            if($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){ return $ofd.FileName }
+            return $null
+        }
+        $inv = Get-SshCredentialInventory $mobaIniPrompter
         $Sync.Inventory = $inv
     } catch {
         $Sync.LogQueue.Enqueue(@('ERR', "unhandled error: $($_.Exception.Message)"))
