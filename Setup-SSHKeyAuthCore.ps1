@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   - 日志: Info/Ok/Warn/Err/Banner/Dim, 默认输出到控制台; GUI 可用 Set-LogSink 重定向
-  - 发现: Get-ActiveSshTargets / Find-MobaXtermIni / Read-MobaSessions / Get-XshellStoredPasswords
+  - 发现: Get-ActiveSshTargets / Find-MobaConfig / Read-MobaSessions / Get-XshellStoredPasswords
   - 解密: ConvertFrom-XshellPassword (Xshell5-8) / ConvertFrom-MobaPasswordV24 / ConvertFrom-MobaPasswordLegacy
   - 密钥: Ensure-SshKey / Test-KeyAuth / Install-PubKey (askpass)
   - 客户端配置: Update-MobaIni / New-NssshPri / New-XshellSessionFile / Ensure-Xagent
@@ -103,12 +103,14 @@ function Save-LastMobaIni([string]$Path){
     } catch { }
 }
 
-function Find-MobaXtermIni([scriptblock]$Prompter){
+# 定位 MobaXterm 配置源: 便携版/INI 模式返回 @{Type='ini';Path=...}
+# 安装版(注册表模式, 会话存于 HKCU\Software\Mobatek\MobaXterm\S)返回 @{Type='registry';RegBase='HKCU\Software\Mobatek\MobaXterm'}
+function Find-MobaConfig([scriptblock]$Prompter){
     # 1) 正在运行的 MobaXterm 进程所在目录 (便携版)
     $p = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' } | Select-Object -First 1
     if($p -and $p.Path){
         $ini = Join-Path (Split-Path $p.Path) 'MobaXterm.ini'
-        if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+        if(Test-Path $ini){ Save-LastMobaIni $ini; return @{ Type = 'ini'; Path = $ini } }
     }
     # 1.5) 开始菜单 / 桌面的 MobaXterm 快捷方式指向的目录
     try{
@@ -123,48 +125,111 @@ function Find-MobaXtermIni([scriptblock]$Prompter){
                 $t = $sh.CreateShortcut($lnk.FullName).TargetPath
                 if($t){
                     $ini = Join-Path (Split-Path $t -Parent) 'MobaXterm.ini'
-                    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+                    if(Test-Path $ini){ Save-LastMobaIni $ini; return @{ Type = 'ini'; Path = $ini } }
                 }
             }
         }
     } catch { }
-    # 2) 上次成功定位的路径 (缓存; 便携版主进程关闭后仍有效)
+    # 2) 上次成功定位的 INI 路径 (缓存; 便携版主进程关闭后仍有效)
     $cached = $null
     try{ $cached = (Get-ItemProperty 'HKCU:\Software\Setup-SSHKeyAuth' -Name 'LastMobaIni' -ErrorAction SilentlyContinue).LastMobaIni } catch { }
-    if($cached -and (Test-Path $cached)){ return $cached }
-    # 3) 安装版默认位置
+    if($cached -and (Test-Path $cached)){ return @{ Type = 'ini'; Path = $cached } }
+    # 3) 安装版 INI 模式默认位置 (用户在设置中选择了使用 INI 文件)
     $ini = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'MobaXterm\MobaXterm.ini'
-    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
-    # 4) 浅层扫描常见根目录 (两层深度, 找 *MobaXterm* 目录)
+    if(Test-Path $ini){ Save-LastMobaIni $ini; return @{ Type = 'ini'; Path = $ini } }
+    # 4) 安装版注册表模式: 会话存于 HKCU\Software\Mobatek\MobaXterm\S
+    #    (便携版运行过也会写顶层 SessionP, 但会话不在注册表, 故以 S 键有 SSH 会话值为判据)
+    if(Test-MobaRegistrySessions){
+        return @{ Type = 'registry'; RegBase = 'HKCU\Software\Mobatek\MobaXterm' }
+    }
+    # 5) 浅层扫描常见根目录 (两层深度, 找 *MobaXterm* 目录)
     $roots = @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:USERPROFILE 'Downloads'), 'C:\', 'D:\', 'E:\')
     foreach($root in $roots){
         if(-not $root -or -not (Test-Path $root)){ continue }
         foreach($d1 in (Get-ChildItem $root -Directory -ErrorAction SilentlyContinue)){
             if($d1.Name -like '*MobaXterm*'){
                 $ini = Join-Path $d1.FullName 'MobaXterm.ini'
-                if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+                if(Test-Path $ini){ Save-LastMobaIni $ini; return @{ Type = 'ini'; Path = $ini } }
             }
             foreach($d2 in (Get-ChildItem $d1.FullName -Directory -ErrorAction SilentlyContinue)){
                 if($d2.Name -like '*MobaXterm*'){
                     $ini = Join-Path $d2.FullName 'MobaXterm.ini'
-                    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+                    if(Test-Path $ini){ Save-LastMobaIni $ini; return @{ Type = 'ini'; Path = $ini } }
                 }
             }
         }
     }
-    # 5) 兜底: 提示用户指定 (回调返回路径或 null)
+    # 6) 兜底: 提示用户指定 INI (回调返回路径或 null)
     if($Prompter){
         $ans = & $Prompter
-        if($ans -and (Test-Path $ans)){ Save-LastMobaIni $ans; return $ans }
+        if($ans -and (Test-Path $ans)){ Save-LastMobaIni $ans; return @{ Type = 'ini'; Path = $ans } }
     }
     return $null
 }
 
-# 解析 [Bookmarks*] 段: 会话行 = "名称=#109#0%host%port%user%...%keyPath%..."
-function Read-MobaSessions([string]$IniPath){
+# 安装版注册表模式: S 键存在且含至少一个 SSH 会话值 (#109# 前缀)
+function Test-MobaRegistrySessions{
+    try{
+        $sk = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Mobatek\MobaXterm\S')
+        if(-not $sk){ return $false }
+        foreach($vn in $sk.GetValueNames()){
+            $v = [string]$sk.GetValue($vn)
+            if($v -and ($v.Trim() -split '%')[0] -match '^#109#\d+$'){ $sk.Close(); return $true }
+        }
+        $sk.Close()
+        return $false
+    } catch { return $false }
+}
+
+# 注册表模式工具: 打开子键 (可写)
+function Open-MobaRegKey([string]$SubKey, [bool]$Writable = $false){
+    $path = 'Software\Mobatek\MobaXterm'
+    if($SubKey){ $path = "$path\$SubKey" }
+    if($Writable){ return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($path) }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path)
+}
+
+# 注册表模式备份: 导出整个 MobaXterm 键为 .reg 文件
+function Backup-MobaRegistry{
+    try{
+        $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'MobaXterm'
+        if(-not (Test-Path $dir)){ New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $regFile = Join-Path $dir "MobaXterm-registry-backup-$(Get-Date -Format yyyyMMdd-HHmmss).reg"
+        $null = & reg.exe export 'HKCU\Software\Mobatek\MobaXterm' "$regFile" /y 2>&1
+        if(Test-Path $regFile){ Ok "MobaXterm registry backed up -> $regFile"; return $true }
+    } catch { }
+    Warn "MobaXterm registry backup failed (continuing without backup)"
+    return $false
+}
+
+# 解析 MobaXterm SSH 会话 (书签):
+#   INI 模式:     [Bookmarks*] 段的 "名称=#109#0%host%port%user%...%keyPath%..." 行
+#   注册表模式:   HKCU\Software\Mobatek\MobaXterm\S 键的值 (值名=会话名, 值=同格式串)
+# $Source: Find-MobaConfig 返回的对象; 也兼容直接传 INI 路径字符串
+function Read-MobaSessions($Source){
     $result = @()
-    if(-not $IniPath){ return $result }
-    $lines = (Get-IniText $IniPath).Text -split "`r?`n"
+    if(-not $Source){ return $result }
+    # 兼容: 直接传 INI 路径字符串
+    if($Source -is [string]){ $Source = @{ Type = 'ini'; Path = $Source } }
+    if($Source.Type -eq 'registry'){
+        $sk = Open-MobaRegKey 'S'
+        if($sk){
+            foreach($vn in $sk.GetValueNames()){
+                $v = [string]$sk.GetValue($vn)
+                $f = $v.Trim() -split '%'
+                if($f.Count -gt 14 -and $f[0] -match '^#109#\d+$'){
+                    $result += [pscustomobject]@{
+                        Name = $vn; Host = $f[1]; Port = $f[2]; Login = $f[3]
+                        KeyPath = $f[14]; Source = 'registry'; IniPath = "$($Source.RegBase)\S"; LineNo = -1
+                    }
+                }
+            }
+            $sk.Close()
+        }
+        return $result
+    }
+    # INI 模式
+    $lines = (Get-IniText $Source.Path).Text -split "`r?`n"
     $section = ''
     for($i=0; $i -lt $lines.Count; $i++){
         $line = $lines[$i]
@@ -173,15 +238,41 @@ function Read-MobaSessions([string]$IniPath){
             $name = $Matches[1]; $val = $Matches[2]
             if($name -in @('SubRep','ImgNum')){ continue }
             $f = ($val.Trim()) -split '%'
-            if($f.Count -gt 14 -and $f[0] -match '^#109#0$'){
+            if($f.Count -gt 14 -and $f[0] -match '^#109#\d+$'){
                 $result += [pscustomobject]@{
                     Name = $name; Host = $f[1]; Port = $f[2]; Login = $f[3]
-                    KeyPath = $f[14]; Section = $section; IniPath = $IniPath; LineNo = $i
+                    KeyPath = $f[14]; Source = 'ini'; Section = $section; IniPath = $Source.Path; LineNo = $i
                 }
             }
         }
     }
     return $result
+}
+
+# 获取 MobaXterm 数据映射 (供密码解密用), 结构与 Read-IniFile 相同:
+#   INI 模式:     [Misc]/[Sesspass]/[Credentials]/[Passwords] 各段
+#   注册表模式:   顶层值 SessionP -> Misc; M/Sesspass, C/Credentials, P/Passwords 子键
+function Get-MobaDataMap($Source){
+    if($Source -is [string]){ $Source = @{ Type = 'ini'; Path = $Source } }
+    if($Source -and $Source.Type -eq 'registry'){
+        $base = Open-MobaRegKey $null
+        $map = [ordered]@{}
+        $map['Misc'] = [ordered]@{ SessionP = [string]$base.GetValue('SessionP') }
+        $map['Sesspass'] = [ordered]@{}
+        $map['Credentials'] = [ordered]@{}
+        $map['Passwords'] = [ordered]@{}
+        foreach($pair in @(@('M','Sesspass'), @('C','Credentials'), @('P','Passwords'))){
+            $k = $base.OpenSubKey($pair[0])
+            if($k){
+                foreach($vn in $k.GetValueNames()){ $map[$pair[1]][$vn] = [string]$k.GetValue($vn) }
+                $k.Close()
+            }
+        }
+        $base.Close()
+        return $map
+    }
+    if($Source -and $Source.Path){ return Read-IniFile $Source.Path }
+    return $null
 }
 
 # ============================================ 3. 密码解密 (尽力而为) ========
@@ -629,6 +720,117 @@ function Add-MobaBookmarks([string]$IniPath, [object[]]$Entries, [string]$Privat
     return $inserted
 }
 
+# ================================ 5R. MobaXterm 注册表模式 (安装版) =========
+# 使用 .NET RegistryKey API (避免 PowerShell 注册表 provider 的 -Name 通配符解析问题,
+# 会话名常含 "[...]" 等会被误当作字符类的字符)
+
+# 更新注册表会话的私钥字段 + 同步顶层 LastSession 值
+function Update-MobaSessionsRegistry([object[]]$Sessions, [string]$PrivateKey){
+    $mobaKey = ConvertTo-MobaKeyPath $PrivateKey
+    $changed = 0
+    $sk = Open-MobaRegKey 'S' $true
+    if(-not $sk){ Err "cannot open MobaXterm registry sessions key"; return 0 }
+    foreach($s in $Sessions){
+        $v = [string]$sk.GetValue($s.Name)
+        if(-not $v){ continue }
+        $f = $v.Trim() -split '%'
+        if($f.Count -le 14 -or $f[0] -notmatch '^#109#\d+$'){ continue }
+        if($f[14] -ceq $mobaKey){ continue }
+        $old = $f[14]; if(-not $old){ $old = '<none>' }
+        $f[14] = $mobaKey
+        $sk.SetValue($s.Name, ($f -join '%'), [Microsoft.Win32.RegistryValueKind]::String)
+        $changed++
+        Dim ("  -> {0}  key: {1} => {2}" -f $s.Name, $old, $mobaKey)
+    }
+    $sk.Close()
+    # 同步顶层 LastSession (MobaXterm 启动时自动重开的会话)
+    $top = Open-MobaRegKey $null $true
+    if($top){
+        $ls = [string]$top.GetValue('LastSession')
+        if($ls -match '^([^|]+)\|(#109#\d+%.*)$'){
+            $lsName = $Matches[1]
+            foreach($s in $Sessions){
+                if($s.Name -ceq $lsName){
+                    $f = $Matches[2] -split '%'
+                    if($f.Count -gt 14 -and $f[14] -cne $mobaKey){
+                        $f[14] = $mobaKey
+                        $top.SetValue('LastSession', ($lsName + '|' + ($f -join '%')), [Microsoft.Win32.RegistryValueKind]::String)
+                        Dim "  -> LastSession ($lsName) synced"
+                    }
+                }
+            }
+        }
+        $top.Close()
+    }
+    if($changed -gt 0){ Ok "MobaXterm registry sessions updated ($changed -> private key: $mobaKey)" }
+    else { Info "MobaXterm registry: all target sessions already configured" }
+    return $changed
+}
+
+# 注册表模式创建缺失会话
+function Add-MobaSessionsRegistry([object[]]$Entries, [string]$PrivateKey){
+    if(-not $Entries -or $Entries.Count -eq 0){ return 0 }
+    $mobaKey = ConvertTo-MobaKeyPath $PrivateKey
+    $sk = Open-MobaRegKey 'S' $true
+    if(-not $sk){ Err "cannot open MobaXterm registry sessions key"; return 0 }
+    # 模板: 优先复用现有会话值 (保留终端设置), 否则内置模板
+    $builtinTemplate = '#109#0%192.168.0.1%22%root%%-1%0%%%%%0%-1%0%%%-1%-1%0%0%%1080%%0%0%1%%0%%%%0%-1%-1%0%%%0%#MobaFont%10%0%0%-1%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%0%_Std_Colors_0_%80%24%0%1%-1%<none>%%0%0%-1%0%#0# #-1'
+    $template = $builtinTemplate
+    foreach($vn in $sk.GetValueNames()){
+        $v = [string]$sk.GetValue($vn)
+        $f = $v.Trim() -split '%'
+        if($f.Count -gt 14 -and $f[0] -match '^#109#\d+$'){ $template = $v.Trim(); break }
+    }
+    $tp = $template -split '%'
+    if($tp.Count -le 14){ $sk.Close(); Err 'internal: invalid bookmark template'; return 0 }
+    $inserted = 0
+    foreach($e in $Entries){
+        $f = $tp
+        $f[1] = "$($e.Ip)"; $f[2] = "$($e.Port)"; $f[3] = "$($e.User)"
+        $f[14] = $mobaKey
+        $name = "$($e.Ip)"
+        if($e.User){ $name = "$($e.Ip) ($($e.User))" }
+        $sk.SetValue($name, ($f -join '%'), [Microsoft.Win32.RegistryValueKind]::String)
+        $inserted++
+        Dim "  ++ new registry session: $($e.Ip):$($e.Port) login=$($e.User)"
+    }
+    $sk.Close()
+    if($inserted -gt 0){ Ok "MobaXterm registry: $inserted session(s) created" }
+    return $inserted
+}
+
+# 注册表模式删除会话 (含顶层 LastSession 清理)
+function Remove-MobaSessionsRegistry([string[]]$Ips){
+    if(-not $Ips -or $Ips.Count -eq 0){ return 0 }
+    $removed = 0
+    $removedNames = @{}
+    $sk = Open-MobaRegKey 'S' $true
+    if($sk){
+        foreach($vn in @($sk.GetValueNames())){
+            $v = [string]$sk.GetValue($vn)
+            $f = $v.Trim() -split '%'
+            if($f.Count -gt 1 -and $f[0] -match '^#109#\d+$' -and $Ips -contains $f[1]){
+                $sk.DeleteValue($vn)
+                $removed++
+                $removedNames[$vn] = $true
+                Dim "  xx $vn  (registry session removed)"
+            }
+        }
+        $sk.Close()
+    }
+    $top = Open-MobaRegKey $null $true
+    if($top){
+        $ls = [string]$top.GetValue('LastSession')
+        if($ls -match '^([^|]+)\|' -and $removedNames.Contains($Matches[1])){
+            $top.SetValue('LastSession', '', [Microsoft.Win32.RegistryValueKind]::String)
+            Dim "  -> LastSession cleared"
+        }
+        $top.Close()
+    }
+    if($removed -gt 0){ Ok "MobaXterm registry: $removed session(s) removed" }
+    return $removed
+}
+
 # ================================================ 6. Xshell 配置 ==========
 # OpenSSH 私钥 -> NSSSH .pri (NetSarang 用户密钥库格式)
 function New-NssshPri([string]$OpensshPriv, [string]$OutPath){
@@ -785,16 +987,17 @@ function Invoke-PasswordlessSetup{
     } else {
         Warn "no established SSH connection found from MobaXterm/Xshell"
     }
-    $mobaIni = Find-MobaXtermIni $MobaIniPrompter
+    $mobaSource = Find-MobaConfig $MobaIniPrompter
     $mobaSessions = @()
     $mobaIniMap = $null
-    if($mobaIni){
-        Info "MobaXterm config: $mobaIni"
-        $mobaSessions = Read-MobaSessions $mobaIni
-        $mobaIniMap = Read-IniFile $mobaIni
+    if($mobaSource){
+        if($mobaSource.Type -eq 'registry'){ Info "MobaXterm config: registry ($($mobaSource.RegBase)) [installed edition]" }
+        else { Info "MobaXterm config: $($mobaSource.Path)" }
+        $mobaSessions = Read-MobaSessions $mobaSource
+        $mobaIniMap = Get-MobaDataMap $mobaSource
         foreach($s in $mobaSessions){ Dim "moba session: $($s.Host):$($s.Port)  login=$($s.Login)  key=$($s.KeyPath)" }
     } elseif(-not $SkipMoba){
-        Warn "MobaXterm.ini not found - MobaXterm sessions/credentials skipped"
+        Warn "MobaXterm config not found (neither .ini nor registry) - MobaXterm sessions/credentials skipped"
     }
     Info "scanning Xshell sessions ..."
     $xshPw = Get-XshellStoredPasswords
@@ -941,17 +1144,29 @@ function Invoke-PasswordlessSetup{
             }
         }
         if(-not (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' })){
+            $isRegistry = ($mobaSource -and $mobaSource.Type -eq 'registry')
+            # 注册表模式: 修改前先导出备份
+            if($isRegistry -and ($mobaSessions.Count -gt 0 -or $removeIps.Count -gt 0 -or @($report | Where-Object { $_.Status -ne 'REMOVED' }).Count -gt 0)){
+                Backup-MobaRegistry | Out-Null
+            }
             # 5a. 更新已有书签的私钥字段 (排除被删除的)
             $targets = @($mobaSessions | Where-Object { $chosenIps -contains $_.Host -and $removeIps -notcontains $_.Host })
-            if($targets){ Update-MobaIni $targets $key.Pri | Out-Null }
+            if($targets){
+                if($isRegistry){ Update-MobaSessionsRegistry $targets $key.Pri | Out-Null }
+                else { Update-MobaIni $targets $key.Pri | Out-Null }
+            }
             # 5b. 删除被标记的会话书签
-            if($removeIps.Count -gt 0){ Remove-MobaBookmarks $mobaIni $removeIps | Out-Null }
+            if($removeIps.Count -gt 0){
+                if($isRegistry){ Remove-MobaSessionsRegistry $removeIps | Out-Null }
+                else { Remove-MobaBookmarks $mobaSource.Path $removeIps | Out-Null }
+            }
             # 5c. 为 MobaXterm 中还没有书签的目标创建书签 (排除被删除的)
             $existingHosts = @($mobaSessions | ForEach-Object { $_.Host }) + @($removeIps)
             $missing = @($report | Where-Object { $_.Status -ne 'REMOVED' -and $existingHosts -notcontains $_.Ip })
             if($missing.Count -gt 0){
-                foreach($m in $missing){ Dim "  ++ new bookmark: $($m.Ip):$($m.Port) login=$($m.User)" }
-                Add-MobaBookmarks $mobaIni $missing $key.Pri | Out-Null
+                foreach($m in $missing){ Dim "  ++ new session: $($m.Ip):$($m.Port) login=$($m.User)" }
+                if($isRegistry){ Add-MobaSessionsRegistry $missing $key.Pri | Out-Null }
+                else { Add-MobaBookmarks $mobaSource.Path $missing $key.Pri | Out-Null }
             }
         }
     } elseif(-not $SkipMoba -and -not $mobaSessions) {
@@ -1002,14 +1217,15 @@ function Invoke-PasswordlessSetup{
 function Get-SshCredentialInventory([scriptblock]$MobaIniPrompter){
     Banner "scanning SSH connections and stored sessions ..."
     $active = Get-ActiveSshTargets
-    $mobaIni = Find-MobaXtermIni $MobaIniPrompter
+    $mobaSource = Find-MobaConfig $MobaIniPrompter
     $mobaSessions = @(); $mobaIniMap = $null
-    if($mobaIni){
-        Info "MobaXterm config: $mobaIni"
-        $mobaSessions = Read-MobaSessions $mobaIni
-        $mobaIniMap = Read-IniFile $mobaIni
+    if($mobaSource){
+        if($mobaSource.Type -eq 'registry'){ Info "MobaXterm config: registry ($($mobaSource.RegBase)) [installed edition]" }
+        else { Info "MobaXterm config: $($mobaSource.Path)" }
+        $mobaSessions = Read-MobaSessions $mobaSource
+        $mobaIniMap = Get-MobaDataMap $mobaSource
     } else {
-        Warn "MobaXterm.ini not found - MobaXterm sessions/credentials skipped"
+        Warn "MobaXterm config not found (neither .ini nor registry) - MobaXterm sessions/credentials skipped"
     }
     $xshPw = Get-XshellStoredPasswords
     Info "found: $($active.Count) active connection(s), $($mobaSessions.Count) MobaXterm session(s), $($xshPw.Count) Xshell session(s)"

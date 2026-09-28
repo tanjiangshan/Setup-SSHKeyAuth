@@ -203,7 +203,10 @@ Server       User 免密登录
 |---|---|
 | 操作系统 | Windows 10 / 11（PowerShell 5.1） |
 | OpenSSH 客户端 | ≥ 8.4（Win10 21H1+ / Win11 自带即满足；密码部署用到 `SSH_ASKPASS_REQUIRE`） |
-| MobaXterm | 任意版本均可配置；密码自动解密支持 v24 及以下 |
+| MobaXterm | 便携版 / 安装版均可：**便携版**读改 exe 旁的 MobaXterm.ini；
+            **安装版**（配置存注册表 `HKCU\Software\Mobatek\MobaXterm`）自动切换注册表模式，
+            读改 S 键中的会话（改前自动导出 .reg 备份到 文档\MobaXterm\）；
+            密码自动解密支持 v24 及以下 |
 | Xshell | 6 / 7 / 8（通过注册表定位用户数据目录） |
 
 ## 故障排查
@@ -228,8 +231,10 @@ Server       User 免密登录
 - **MobaXterm 书签**：INI 中 `[Bookmarks*]` 段的会话串以 `%` 分隔，
   第 14 个字段为私钥路径，工具仅修改该字段，其余字节保持不变；
   `[Misc] LastSession` 同步更新，INI 编码 (UTF-8/UTF-16/ANSI) 探测后原样写回；
-  MobaXterm.ini 定位链：运行进程 → 开始菜单/桌面快捷方式 → 上次成功路径缓存 →
-  文档默认位置 → 常见根目录浅层扫描 → 弹窗手动指定。
+  **安装版（注册表模式）**同样处理 `HKCU\Software\Mobatek\MobaXterm\S` 键中的会话
+  （.NET RegistryKey API，不受会话名中 `[...]` 的通配符影响），改前 reg export 备份；
+  配置定位链：运行进程 → 开始菜单/桌面快捷方式 → 上次成功路径缓存 →
+  文档默认位置 → 安装版注册表 → 常见根目录浅层扫描 → 弹窗手动指定。
 
 ## License
 

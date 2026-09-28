@@ -65,7 +65,7 @@ $confirmer = {
 }
 $mobaIniPrompter = {
     Write-Host ""
-    Write-Host "  [!] 未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录)" -ForegroundColor Yellow
+    Write-Host "  [!] 未自动找到 MobaXterm 配置 (便携版 .ini / 安装版注册表均未发现)" -ForegroundColor Yellow
     $p = Read-Host "  输入 MobaXterm.ini 完整路径 (Enter = 跳过 MobaXterm 支持)"
     if($p -and (Test-Path $p)){ return $p }
     return $null

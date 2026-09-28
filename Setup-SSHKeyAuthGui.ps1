@@ -161,7 +161,7 @@ $script:SetupBody = {
 
         # MobaXterm.ini 定位失败时让用户手动选择文件
         $mobaIniPrompter = {
-            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 支持.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm 配置 (便携版 .ini / 安装版注册表均未发现).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 支持.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
             if($r -ne [System.Windows.Forms.DialogResult]::Yes){ return $null }
             $ofd = New-Object System.Windows.Forms.OpenFileDialog
             $ofd.Title = '选择 MobaXterm.ini'
@@ -300,7 +300,7 @@ $script:DocBody = {
         Add-Type -AssemblyName System.Drawing
         Set-LogSink { param($level,$msg) $Sync.LogQueue.Enqueue(@($level,$msg)) }
         $mobaIniPrompter = {
-            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm.ini (MobaXterm 未运行且无缓存记录).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 部分.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            $r = [System.Windows.Forms.MessageBox]::Show('未自动找到 MobaXterm 配置 (便携版 .ini / 安装版注册表均未发现).'+[char]13+[char]10+'是否手动选择 MobaXterm.ini 文件?'+[char]13+[char]10+'选择"否"将跳过 MobaXterm 部分.', '定位 MobaXterm 配置', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
             if($r -ne [System.Windows.Forms.DialogResult]::Yes){ return $null }
             $ofd = New-Object System.Windows.Forms.OpenFileDialog
             $ofd.Title = '选择 MobaXterm.ini'
