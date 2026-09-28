@@ -55,7 +55,9 @@ $targetSelector = {
 }
 $pwPrompter = {
     param($ip, $user)
-    return (Read-Host "  input password for $user@$ip to deploy key (Enter = skip)")
+    $ans = Read-Host "  input password for $user@$ip (Enter=skip, D=delete this server's saved sessions)"
+    if($ans -match '^[Dd]$'){ return '__REMOVE_SESSION__' }
+    return $ans
 }
 $confirmer = {
     param($message)
@@ -88,9 +90,9 @@ if($null -eq $report){ exit 1 }
 
 Write-Host ""
 Write-Host "=========================== 报告 ===========================" -ForegroundColor Cyan
-$report | Format-Table @{L='Server';E={$_.Ip}}, @{L='Port';E={$_.Port}}, @{L='User';E={$_.User}}, @{L='免密登录';E={ if($_.KeyAuth){'OK'}else{'FAILED'} }} -AutoSize
+$report | Format-Table @{L='Server';E={$_.Ip}}, @{L='Port';E={$_.Port}}, @{L='User';E={$_.User}}, @{L='结果';E={ if($_.Status -eq 'REMOVED'){'已删除会话'} elseif($_.KeyAuth){'免密OK'}else{'FAILED'} }} -AutoSize
 Write-Host "提示: MobaXterm 重新打开后, 会话将自动优先使用私钥登录;"
 Write-Host "      Xshell 会话位于会话面板, 双击即免密连接 (Xagent 需保持运行)."
 Write-Host "===========================================================" -ForegroundColor Cyan
-$failed = @($report | Where-Object { -not $_.KeyAuth })
+$failed = @($report | Where-Object { -not $_.KeyAuth -and $_.Status -ne 'REMOVED' })
 exit $(if($failed.Count -gt 0){ 2 } else { 0 })

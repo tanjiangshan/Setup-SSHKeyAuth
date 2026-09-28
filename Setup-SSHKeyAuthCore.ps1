@@ -505,6 +505,130 @@ function Update-MobaIni([object[]]$Sessions, [string]$PrivateKey){
     return $changed
 }
 
+# 从 MobaXterm 书签中删除指定主机的 SSH 会话 (需 MobaXterm 未运行; 备份后原编码写回)
+function Remove-MobaBookmarks([string]$IniPath, [string[]]$Ips){
+    if(-not $IniPath -or -not $Ips -or $Ips.Count -eq 0){ return 0 }
+    $data = Get-IniText $IniPath
+    $sep = if($data.Text.IndexOf("`r`n") -ge 0){ "`r`n" } else { "`n" }
+    $lines = $data.Text -split "`r?`n"
+    $kept = New-Object System.Collections.Generic.List[string]
+    $removedNames = @{}
+    $removed = 0
+    $section = ''
+    foreach($line in $lines){
+        if($line -match '^\s*\[(.+?)\]\s*$'){ $section = $Matches[1]; $kept.Add($line); continue }
+        if($section -like 'Bookmarks*' -and $line -match '^([^=]+)=(.*)$'){
+            $name = $Matches[1]
+            if($name -notin @('SubRep','ImgNum')){
+                $f = ($Matches[2].Trim()) -split '%'
+                if($f.Count -gt 1 -and $f[0] -match '^#109#\d+$' -and $Ips -contains $f[1]){
+                    $removed++
+                    $removedNames[$name] = $true
+                    Dim "  xx $name  (bookmark removed)"
+                    continue
+                }
+            }
+        }
+        # LastSession 指向已删会话 -> 置空, 避免启动时指向不存在会话
+        if($removedNames.Count -gt 0 -and $line -match '^LastSession=(.+?)\|'){
+            if($removedNames.Contains($Matches[1])){ $kept.Add('LastSession='); continue }
+        }
+        $kept.Add($line)
+    }
+    if($removed -gt 0){
+        $bak = "$IniPath.toolbak-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Copy-Item $IniPath $bak -Force
+        [IO.File]::WriteAllText($IniPath, ($kept -join $sep), $data.Encoding)
+        Ok "MobaXterm.ini: $removed bookmark(s) removed (backup: $bak)"
+    }
+    return $removed
+}
+
+# 为缺失会话的主机创建 MobaXterm SSH 书签 (需 MobaXterm 未运行; 备份后原编码写回)
+# $Entries: @{Ip;Port;User} 对象数组
+function Add-MobaBookmarks([string]$IniPath, [object[]]$Entries, [string]$PrivateKey){
+    if(-not $IniPath -or -not $Entries -or $Entries.Count -eq 0){ return 0 }
+    $mobaKey = ConvertTo-MobaKeyPath $PrivateKey
+    $data = Get-IniText $IniPath
+    $sep = if($data.Text.IndexOf("`r`n") -ge 0){ "`r`n" } else { "`n" }
+    $lines = @($data.Text -split "`r?`n")
+
+    # 内置模板 (字段: 0=#109#0 1=host 2=port 3=login ... 14=keypath ... 终端设置)
+    $builtinTemplate = '#109#0%192.168.0.1%22%root%%-1%0%%%%%0%-1%0%%%-1%-1%0%0%%1080%%0%0%1%%0%%%%0%-1%-1%0%%%0%#MobaFont%10%0%0%-1%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%0%_Std_Colors_0_%80%24%0%1%-1%<none>%%0%0%-1%0%#0# #-1'
+    # 优先用现有书签行做模板 (保留用户终端配色等设置)
+    $template = $builtinTemplate
+    $section = ''
+    foreach($line in $lines){
+        if($line -match '^\s*\[(.+?)\]\s*$'){ $section = $Matches[1]; continue }
+        if($section -like 'Bookmarks*' -and $line -match '^[^=]+=(.*)$'){
+            $v = $Matches[1].Trim()
+            if($v -match '^#109#\d+%'){
+                $f = $v -split '%'
+                if($f.Count -gt 14){ $template = $v; break }
+            }
+        }
+    }
+    $tp = $template -split '%'
+    if($tp.Count -le 14){ Err 'internal: invalid bookmark template'; return 0 }
+
+    # 定位插入点: 优先 [Bookmarks] 段, 否则第一个 [Bookmarks*] 段, 都没有则文件末尾追加新段
+    $targetSection = $null
+    for($i=0; $i -lt $lines.Count; $i++){
+        if($lines[$i] -match '^\s*\[(.+?)\]\s*$'){
+            $n = $Matches[1]
+            if($n -eq 'Bookmarks'){ $targetSection = 'Bookmarks'; break }
+            if(-not $targetSection -and $n -like 'Bookmarks*'){ $targetSection = $n }
+        }
+    }
+    $newLines = New-Object System.Collections.Generic.List[string]
+    $inserted = 0
+    $pending = @()
+    foreach($e in $Entries){
+        $f = $tp
+        $f[1] = "$($e.Ip)"; $f[2] = "$($e.Port)"; $f[3] = "$($e.User)"
+        $f[14] = $mobaKey
+        $name = "$($e.Ip)"
+        if($e.User){ $name = "$($e.Ip) ($($e.User))" }
+        $pending += ($name + '=' + ($f -join '%'))
+    }
+    if(-not $targetSection){
+        $newLines.AddRange([string[]]$lines)
+        if($newLines.Count -gt 0 -and $newLines[$newLines.Count-1] -ne ''){ $newLines.Add('') }
+        $newLines.Add('[Bookmarks]')
+        $newLines.Add('SubRep=')
+        $newLines.Add('ImgNum=0')
+        foreach($p in $pending){ $newLines.Add($p); $inserted++ }
+    } else {
+        $inTarget = $false
+        $section = ''
+        for($i=0; $i -lt $lines.Count; $i++){
+            $line = $lines[$i]
+            if($line -match '^\s*\[(.+?)\]\s*$'){
+                # 离开目标段: 在段尾插入待加行
+                if($inTarget){
+                    foreach($p in $pending){ $newLines.Add($p); $inserted++ }
+                    $pending = @()
+                    $inTarget = $false
+                }
+                $section = $Matches[1]
+                if($section -eq $targetSection){ $inTarget = $true }
+                $newLines.Add($line); continue
+            }
+            $newLines.Add($line)
+        }
+        if($inTarget -or $pending.Count -gt 0){
+            foreach($p in $pending){ $newLines.Add($p); $inserted++ }
+        }
+    }
+    if($inserted -gt 0){
+        $bak = "$IniPath.toolbak-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Copy-Item $IniPath $bak -Force
+        [IO.File]::WriteAllText($IniPath, ($newLines -join $sep), $data.Encoding)
+        Ok "MobaXterm.ini: $inserted bookmark(s) created in [$targetSection] (backup: $bak)"
+    }
+    return $inserted
+}
+
 # ================================================ 6. Xshell 配置 ==========
 # OpenSSH 私钥 -> NSSSH .pri (NetSarang 用户密钥库格式)
 function New-NssshPri([string]$OpensshPriv, [string]$OutPath){
@@ -714,6 +838,7 @@ function Invoke-PasswordlessSetup{
 
     # --- 4. 逐台处理 ---
     $report = @()
+    $removeIps = @()
     foreach($ip in $chosenIps){
         Banner ""
         Banner "---- $ip ----"
@@ -768,6 +893,13 @@ function Invoke-PasswordlessSetup{
                     $ans = $null
                     if($PasswordPrompter){ $ans = & $PasswordPrompter $ip $user }
                     else { $ans = Read-Host "  input password for $user@$ip to deploy key (Enter = skip)" }
+                    if($ans -eq '__REMOVE_SESSION__'){
+                        # 用户选择删除该服务器的客户端会话记录 (MobaXterm 书签 + Xshell 会话)
+                        Warn "$ip marked for session removal (MobaXterm bookmark + Xshell session)"
+                        $removeIps += $ip
+                        $report += [pscustomobject]@{ Ip = $ip; Port = $port; User = $user; KeyAuth = $false; Status = 'REMOVED' }
+                        continue
+                    }
                     if($ans){
                         if(Install-PubKey $ip $port $user $ans $key.PubLine){ $pwUsed = $true; Ok "public key deployed" }
                         else { Err "password auth failed - key NOT deployed" }
@@ -780,11 +912,11 @@ function Invoke-PasswordlessSetup{
             }
         } else { Info "server-side steps skipped"; $keyOk = Test-KeyAuth $ip $port $user $key.Pri }
 
-        $report += [pscustomobject]@{ Ip = $ip; Port = $port; User = $user; KeyAuth = $keyOk }
+        $report += [pscustomobject]@{ Ip = $ip; Port = $port; User = $user; KeyAuth = $keyOk; Status = 'DONE' }
     }
 
-    # --- 5. MobaXterm 配置 ---
-    if(-not $SkipMoba -and $mobaSessions){
+    # --- 5. MobaXterm 配置 (更新已有书签 + 删除标记的 + 创建缺失的) ---
+    if(-not $SkipMoba -and ($mobaSessions -or $report)){
         Banner ""
         $running = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' }
         if($running){
@@ -809,8 +941,18 @@ function Invoke-PasswordlessSetup{
             }
         }
         if(-not (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' })){
-            $targets = @($mobaSessions | Where-Object { $chosenIps -contains $_.Host })
+            # 5a. 更新已有书签的私钥字段 (排除被删除的)
+            $targets = @($mobaSessions | Where-Object { $chosenIps -contains $_.Host -and $removeIps -notcontains $_.Host })
             if($targets){ Update-MobaIni $targets $key.Pri | Out-Null }
+            # 5b. 删除被标记的会话书签
+            if($removeIps.Count -gt 0){ Remove-MobaBookmarks $mobaIni $removeIps | Out-Null }
+            # 5c. 为 MobaXterm 中还没有书签的目标创建书签 (排除被删除的)
+            $existingHosts = @($mobaSessions | ForEach-Object { $_.Host }) + @($removeIps)
+            $missing = @($report | Where-Object { $_.Status -ne 'REMOVED' -and $existingHosts -notcontains $_.Ip })
+            if($missing.Count -gt 0){
+                foreach($m in $missing){ Dim "  ++ new bookmark: $($m.Ip):$($m.Port) login=$($m.User)" }
+                Add-MobaBookmarks $mobaIni $missing $key.Pri | Out-Null
+            }
         }
     } elseif(-not $SkipMoba -and -not $mobaSessions) {
         Banner ""
@@ -829,11 +971,17 @@ function Invoke-PasswordlessSetup{
                 Ok "Xshell user key written: $priPath ($type)"
             } catch { Err "failed to write Xshell user key: $($_.Exception.Message)" }
             $n = 0
+            $removedXsh = 0
             foreach($t in $report){
-                $f = New-XshellSessionFile $t.Ip $t.Port $t.User 'id_ed25519' $xd.Sessions
-                $n++
+                if($t.Status -eq 'REMOVED'){
+                    $xf = Join-Path $xd.Sessions "$($t.Ip).xshf"
+                    if(Test-Path $xf){ Remove-Item $xf -Force; $removedXsh++; Dim "  xx $xf removed" }
+                } else {
+                    $f = New-XshellSessionFile $t.Ip $t.Port $t.User 'id_ed25519' $xd.Sessions
+                    $n++
+                }
             }
-            Ok "Xshell session files written: $n (in $($xd.Sessions))"
+            Ok "Xshell session files written: $n, removed: $removedXsh (in $($xd.Sessions))"
             if(Ensure-Xagent){ Ok "Xagent running (agent-based passwordless auth active)" }
             else { Warn "Xagent not started - start it from Xshell Tools menu for agent auth" }
         } else {

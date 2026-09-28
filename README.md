@@ -28,9 +28,13 @@
 └────────────────────────────────────────────┘
 ```
 
-- **一键配置免密登录**：自动发现目标 → 弹窗勾选服务器 → 提取凭据 → 部署公钥 → 配置 MobaXterm/Xshell → 报告
+- **一键配置免密登录**：自动发现目标 → 弹窗勾选服务器（含未连接的存储会话）→ 提取凭据 → 部署公钥 → 配置 MobaXterm/Xshell → 报告。
+  部署公钥需要密码时弹窗有三个按钮：**确定**（输入密码部署）、**跳过**（跳过该台）、**删除会话**（把这个服务器的会话记录从 MobaXterm 会话列表和 Xshell 会话管理器中删除，二次确认后执行）
 - **一键生成账号密码文档**：汇总本机所有 SSH 连接/会话的 IP / 用户名 / 密码，弹窗选择保存位置，
   生成 Markdown 表格（解不开的密码会标注 `无法自动解密 (MobaXterm v25+)`）
+
+> 配置完成后会自动确保每个目标服务器在 **MobaXterm 的 Saved Sessions** 和 **Xshell 的会话管理器**
+> 里都有会话（已存在则更新私钥配置，缺失则在 MobaXterm 顶层自动创建书签、在 Xshell 生成 .xshf 会话）。
 
 ### 命令行
 
@@ -94,11 +98,13 @@ Setup-SSHKeyAuth/
  ③ 准备密钥        复用 %USERPROFILE%\.ssh\id_ed25519；不存在则自动生成（无口令）
  ④ 部署公钥        先测试密钥是否已能登录；不能则用密码自动部署到
                    服务器 ~/.ssh/authorized_keys（幂等，自动设置 700/600 权限）
-  ⑤ 配置 MobaXterm  备份 MobaXterm.ini 后，将目标会话的私钥字段指向所用私钥
-                    (%USERPROFILE% 下的私钥自动相对化为 _ProfileDir_\... 形式);
-                    同步更新 [Misc] LastSession (MobaXterm 启动时自动重开的会话);
-                    自动探测并保持 INI 编码 (UTF-8 BOM / UTF-16 / UTF-8 / ANSI);
-                    写入后回读校验, 逐会话输出 旧值 => 新值 变更预览
+  ⑤ 配置 MobaXterm  备份 MobaXterm.ini 后:
+                    a. 更新已有目标会话的私钥字段 (%USERPROFILE% 下的私钥自动相对化为
+                       _ProfileDir_\... 形式), 同步 [Misc] LastSession, 写后回读校验
+                    b. 目标在 MobaXterm 中没有会话的, 自动在顶层 [Bookmarks] 创建书签
+                       (复用现有书话的终端配色设置作为模板)
+                    c. 部署公钥时选择"删除会话"的目标, 从书签中移除并清空指向它的 LastSession
+                    自动探测并保持 INI 编码 (UTF-8 BOM / UTF-16 / UTF-8 / ANSI)
  ⑥ 配置 Xshell     a. 把 OpenSSH 私钥转换为 NetSarang 专有格式，写入
                       文档\NetSarang Computer\<版本>\SECSH\UserKeys\id_ed25519.pri
                    b. 在 Sessions\ 目录生成 <ip>.xshf 会话（公钥认证方式）
@@ -205,6 +211,7 @@ Server       User 免密登录
 | 现象 | 原因与处理 |
 |---|---|
 | 某台服务器报告 FAILED | 公钥部署没成功：检查输入的密码是否正确、服务器 sshd 是否允许公钥认证（`PubkeyAuthentication yes`） |
+| 密码提示时输入 `D`（CLI）或点"删除会话"（GUI） | 该服务器被标记为删除：MobaXterm 书签 + Xshell 会话一并移除（服务器文件不动，需 MobaXterm 未运行或同意关闭） |
 | Xshell 双击会话仍提示密码 | 检查 Xagent 是否在运行（任务栏 / 任务管理器）；也可在 Xshell 中 Tools → User Key Manager 确认 `id_ed25519` 已在列表中 |
 | MobaXterm 配置改了但不生效 | MobaXterm 当时在运行，退出时覆盖了修改 → 关闭后重跑（或 `-Force`） |
 | 找不到活跃连接 | 目标连接已断开；用 `-Ip` 手动指定，或 `-All` 处理所有本地会话 |

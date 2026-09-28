@@ -101,14 +101,20 @@ function Finish-Action{
         Banner '=========================== 报告 ==========================='
         if($report){
             foreach($r in $report){
-                $mark = if($r.KeyAuth){ 'OK' } else { 'FAILED' }
-                AppendLog $(if($r.KeyAuth){'OK'}else{'ERR'}) ("  {0,-16} port={1,-5} user={2,-10} 免密登录: {3}" -f $r.Ip, $r.Port, $r.User, $mark)
+                if($r.Status -eq 'REMOVED'){
+                    AppendLog 'WARN' ("  {0,-16} port={1,-5} user={2,-10} 会话已删除" -f $r.Ip, $r.Port, $r.User)
+                } else {
+                    $mark = if($r.KeyAuth){ 'OK' } else { 'FAILED' }
+                    AppendLog $(if($r.KeyAuth){'OK'}else{'ERR'}) ("  {0,-16} port={1,-5} user={2,-10} 免密登录: {3}" -f $r.Ip, $r.Port, $r.User, $mark)
+                }
             }
-            $failed = @($report | Where-Object { -not $_.KeyAuth })
+            $failed = @($report | Where-Object { -not $_.KeyAuth -and $_.Status -ne 'REMOVED' })
+            $removedCnt = @($report | Where-Object { $_.Status -eq 'REMOVED' }).Count
             Info '提示: MobaXterm 重新打开后, 会话将自动优先使用私钥登录;'
             Info '      Xshell 会话位于会话面板, 双击即免密连接 (Xagent 需保持运行).'
-            if($failed.Count -eq 0){ Set-BusyUi $false '完成: 全部目标免密登录配置成功'; AppendLog 'OK' '  全部目标配置成功' }
-            else { Set-BusyUi $false "完成: $(@($report).Count - $failed.Count)/$(@($report).Count) 成功, $($failed.Count) 台失败"; AppendLog 'ERR' "  $($failed.Count) 台失败: $(($failed | ForEach-Object { $_.Ip }) -join ', ')" }
+            if($failed.Count -eq 0 -and $removedCnt -eq 0){ Set-BusyUi $false '完成: 全部目标免密登录配置成功'; AppendLog 'OK' '  全部目标配置成功' }
+            elseif($failed.Count -eq 0){ Set-BusyUi $false "完成: 免密配置成功, 另删除 $removedCnt 个会话" }
+            else { Set-BusyUi $false "完成: $(@($report).Count - $failed.Count - $removedCnt)/$(@($report).Count) 成功, $($failed.Count) 台失败$(if($removedCnt){", $removedCnt 个会话已删除"})"; AppendLog 'ERR' "  $($failed.Count) 台失败: $(($failed | ForEach-Object { $_.Ip }) -join ', ')" }
         } else {
             Set-BusyUi $false '结束 (未产生报告, 详见日志)'
         }
@@ -225,7 +231,7 @@ $script:SetupBody = {
             param($ip, $user)
             $f = New-Object System.Windows.Forms.Form
             $f.Text = '输入密码'
-            $f.Size = New-Object System.Drawing.Size(420, 170)
+            $f.Size = New-Object System.Drawing.Size(440, 180)
             $f.StartPosition = 'CenterScreen'
             $f.FormBorderStyle = 'FixedDialog'
             $f.MaximizeBox = $false
@@ -236,22 +242,34 @@ $script:SetupBody = {
             $lbl.AutoSize = $true
             $tb = New-Object System.Windows.Forms.TextBox
             $tb.Location = New-Object System.Drawing.Point(14, 44)
-            $tb.Size = New-Object System.Drawing.Size(376, 24)
+            $tb.Size = New-Object System.Drawing.Size(396, 24)
             $tb.UseSystemPasswordChar = $true
             $btnOk = New-Object System.Windows.Forms.Button
             $btnOk.Text = '确定'
-            $btnOk.Location = New-Object System.Drawing.Point(220, 88)
-            $btnOk.Size = New-Object System.Drawing.Size(80, 30)
+            $btnOk.Location = New-Object System.Drawing.Point(120, 96)
+            $btnOk.Size = New-Object System.Drawing.Size(88, 30)
             $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $btnDel = New-Object System.Windows.Forms.Button
+            $btnDel.Text = '删除会话'
+            $btnDel.Location = New-Object System.Drawing.Point(214, 96)
+            $btnDel.Size = New-Object System.Drawing.Size(88, 30)
+            $btnDel.DialogResult = [System.Windows.Forms.DialogResult]::Abort
             $btnCancel = New-Object System.Windows.Forms.Button
             $btnCancel.Text = '跳过'
-            $btnCancel.Location = New-Object System.Drawing.Point(310, 88)
-            $btnCancel.Size = New-Object System.Drawing.Size(80, 30)
+            $btnCancel.Location = New-Object System.Drawing.Point(308, 96)
+            $btnCancel.Size = New-Object System.Drawing.Size(88, 30)
             $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
             $f.AcceptButton = $btnOk
             $f.CancelButton = $btnCancel
-            $f.Controls.AddRange(@($lbl, $tb, $btnOk, $btnCancel))
-            if($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and $tb.Text){ return $tb.Text }
+            $f.Controls.AddRange(@($lbl, $tb, $btnOk, $btnDel, $btnCancel))
+            $dr = $f.ShowDialog()
+            if($dr -eq [System.Windows.Forms.DialogResult]::Abort){
+                # 二次确认: 删除不可逆
+                $c = [System.Windows.Forms.MessageBox]::Show("将从 MobaXterm 会话列表和 Xshell 会话管理器中删除 ${user}@${ip} 的会话记录。`n(服务器上的文件不受影响)", '删除会话', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                if($c -eq [System.Windows.Forms.DialogResult]::Yes){ return '__REMOVE_SESSION__' }
+                return $null
+            }
+            if($dr -eq [System.Windows.Forms.DialogResult]::OK -and $tb.Text){ return $tb.Text }
             return $null
         }
 
