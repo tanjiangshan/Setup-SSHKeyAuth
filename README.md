@@ -44,6 +44,9 @@
 # 方式 3：手动指定服务器
 .\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10,192.168.1.11
 
+# 指定已有私钥（默认复用/生成 ~\.ssh\id_ed25519；需无口令）
+.\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10 -PrivateKey "D:\keys\my_key"
+
 # 修改 MobaXterm 配置需要先关闭 MobaXterm，-Force 表示自动关闭（会断开现有终端会话）
 .\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10 -Force
 
@@ -73,6 +76,7 @@ Setup-SSHKeyAuth/
 | `-All` | 处理所有自动发现的目标（活跃连接 + 本地存储的会话） |
 | `-Force` | 自动结束 MobaXterm 进程以便写入其配置文件（**会断开现有终端**，工具会先备份配置） |
 | `-User <name>` | 覆盖自动识别的登录用户名（默认从会话记录中取，取不到则为 root） |
+| `-PrivateKey <path>` | 指定已有私钥（需无口令），默认复用/生成 `~\.ssh\id_ed25519` |
 | `-SkipServer` | 跳过服务器端公钥部署（只配置客户端） |
 | `-SkipMoba` | 跳过 MobaXterm 配置 |
 | `-SkipXshell` | 跳过 Xshell 配置 |
@@ -90,8 +94,11 @@ Setup-SSHKeyAuth/
  ③ 准备密钥        复用 %USERPROFILE%\.ssh\id_ed25519；不存在则自动生成（无口令）
  ④ 部署公钥        先测试密钥是否已能登录；不能则用密码自动部署到
                    服务器 ~/.ssh/authorized_keys（幂等，自动设置 700/600 权限）
- ⑤ 配置 MobaXterm  备份 MobaXterm.ini 后，将目标会话的私钥字段指向
-                   _ProfileDir_\.ssh\id_ed25519（即 C:\Users\<你>\.ssh\id_ed25519）
+  ⑤ 配置 MobaXterm  备份 MobaXterm.ini 后，将目标会话的私钥字段指向所用私钥
+                    (%USERPROFILE% 下的私钥自动相对化为 _ProfileDir_\... 形式);
+                    同步更新 [Misc] LastSession (MobaXterm 启动时自动重开的会话);
+                    自动探测并保持 INI 编码 (UTF-8 BOM / UTF-16 / UTF-8 / ANSI);
+                    写入后回读校验, 逐会话输出 旧值 => 新值 变更预览
  ⑥ 配置 Xshell     a. 把 OpenSSH 私钥转换为 NetSarang 专有格式，写入
                       文档\NetSarang Computer\<版本>\SECSH\UserKeys\id_ed25519.pri
                    b. 在 Sessions\ 目录生成 <ip>.xshf 会话（公钥认证方式）
@@ -212,7 +219,10 @@ Server       User 免密登录
 - **Xshell 密钥库格式**：`---- BEGIN NSSSH PRIVATE KEY ----`（NetSarang 专有封装，
   结构为 openssh-key-v1 的变体），工具按字节级兼容格式直接生成，与官方导入结果一致。
 - **MobaXterm 书签**：INI 中 `[Bookmarks*]` 段的会话串以 `%` 分隔，
-  第 14 个字段为私钥路径，工具仅修改该字段，其余字节保持不变。
+  第 14 个字段为私钥路径，工具仅修改该字段，其余字节保持不变；
+  `[Misc] LastSession` 同步更新，INI 编码 (UTF-8/UTF-16/ANSI) 探测后原样写回；
+  MobaXterm.ini 定位链：运行进程 → 开始菜单/桌面快捷方式 → 上次成功路径缓存 →
+  文档默认位置 → 常见根目录浅层扫描 → 弹窗手动指定。
 
 ## License
 

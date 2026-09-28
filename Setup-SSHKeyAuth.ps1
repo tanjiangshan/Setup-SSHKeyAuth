@@ -20,6 +20,7 @@
   .\Setup-SSHKeyAuth.ps1 -All            # 处理所有已建立的连接
   .\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10,192.168.1.11
   .\Setup-SSHKeyAuth.ps1 -All -Force     # 自动关闭 MobaXterm 以便修改其 INI
+  .\Setup-SSHKeyAuth.ps1 -Ip 192.168.1.10 -PrivateKey "D:\keys\my_key"   # 指定已有私钥
   .\Setup-SSHKeyAuth.ps1 -ExportCred "creds.md"   # 仅生成凭据清单文档
 #>
 [CmdletBinding()]
@@ -28,6 +29,7 @@ param(
     [switch]$All,
     [switch]$Force,
     [string]$User,
+    [string]$PrivateKey,
     [switch]$SkipServer,
     [switch]$SkipMoba,
     [switch]$SkipXshell,
@@ -78,7 +80,7 @@ if($ExportCred){
 }
 
 # ---- 主流程 ----
-$report = Invoke-PasswordlessSetup -TargetIps $Ip -UserName $User -All:$All -ForceCloseMoba:([bool]$Force) `
+$report = Invoke-PasswordlessSetup -TargetIps $Ip -UserName $User -PrivateKey $PrivateKey -All:$All -ForceCloseMoba:([bool]$Force) `
     -SkipServer:$SkipServer -SkipMoba:$SkipMoba -SkipXshell:$SkipXshell `
     -TargetSelector $targetSelector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer -MobaIniPrompter $mobaIniPrompter
 

@@ -26,12 +26,9 @@ function Banner($m){ if($script:LogSink){ & $script:LogSink 'BANNER' $m } else {
 function Dim($m)   { if($script:LogSink){ & $script:LogSink 'DIM' $m }  else { Write-Host "      $m" -ForegroundColor DarkGray } }
 
 function Read-IniFile([string]$Path){
-    $enc = [Text.Encoding]::UTF8
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    if($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE){ $enc = [Text.Encoding]::Unicode }
     $map = [ordered]@{}
     $section = ''
-    foreach($line in [IO.File]::ReadAllLines($Path, $enc)){
+    foreach($line in ((Get-IniText $Path).Text -split "`r?`n")){
         if($line -match '^\s*\[(.+)\]\s*$'){ $section = $Matches[1]; if(-not $map.Contains($section)){ $map[$section] = [ordered]@{} }; continue }
         if($line -match '^([^=]+?)=(.*)$'){
             $k = $Matches[1]; $v = $Matches[2]
@@ -61,6 +58,42 @@ function Get-ActiveSshTargets{
 }
 
 # ==================================================== 2. MobaXterm 会话 ====
+# 读取 INI 为文本, 自动探测编码 (UTF-8 BOM / UTF-16 LE / 严格 UTF-8 / ANSI), 写回时保持原编码
+function Get-IniText([string]$Path){
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){
+        $enc = New-Object System.Text.UTF8Encoding($true)
+        $text = $enc.GetString($bytes)
+        if($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF){ $text = $text.Substring(1) }
+        return @{ Text = $text; Encoding = $enc }
+    }
+    if($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE){
+        $enc = [Text.Encoding]::Unicode
+        return @{ Text = $enc.GetString($bytes, 2, $bytes.Length - 2); Encoding = $enc }
+    }
+    try{
+        $strict = New-Object System.Text.UTF8Encoding($false, $true)
+        $text = $strict.GetString($bytes)
+        return @{ Text = $text; Encoding = (New-Object System.Text.UTF8Encoding($false)) }
+    } catch {
+        $enc = [Text.Encoding]::Default
+        return @{ Text = $enc.GetString($bytes); Encoding = $enc }
+    }
+}
+
+# 私钥绝对路径 -> MobaXterm 书签使用的形式 (%USERPROFILE% 下相对化为 _ProfileDir_\...)
+function ConvertTo-MobaKeyPath([string]$Path){
+    if(-not $Path){ return $Path }
+    if($Path -like '_ProfileDir_*'){ return $Path }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    $full = [IO.Path]::GetFullPath($expanded).Replace('/','\')
+    $up = $env:USERPROFILE.TrimEnd('\')
+    if($full.StartsWith($up, [StringComparison]::OrdinalIgnoreCase)){
+        return '_ProfileDir_\' + $full.Substring($up.Length).TrimStart('\')
+    }
+    return $full
+}
+
 # 记住上次成功定位的 MobaXterm.ini 路径 (注册表), 便携版主进程未运行时仍可找到
 function Save-LastMobaIni([string]$Path){
     try{
@@ -77,6 +110,24 @@ function Find-MobaXtermIni([scriptblock]$Prompter){
         $ini = Join-Path (Split-Path $p.Path) 'MobaXterm.ini'
         if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
     }
+    # 1.5) 开始菜单 / 桌面的 MobaXterm 快捷方式指向的目录
+    try{
+        $sh = New-Object -ComObject WScript.Shell
+        $lnkDirs = @(
+            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
+            (Join-Path $env:USERPROFILE 'Desktop'),
+            'C:\Users\Public\Desktop'
+        )
+        foreach($d in $lnkDirs){
+            foreach($lnk in (Get-ChildItem $d -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'MobaXterm' })){
+                $t = $sh.CreateShortcut($lnk.FullName).TargetPath
+                if($t){
+                    $ini = Join-Path (Split-Path $t -Parent) 'MobaXterm.ini'
+                    if(Test-Path $ini){ Save-LastMobaIni $ini; return $ini }
+                }
+            }
+        }
+    } catch { }
     # 2) 上次成功定位的路径 (缓存; 便携版主进程关闭后仍有效)
     $cached = $null
     try{ $cached = (Get-ItemProperty 'HKCU:\Software\Setup-SSHKeyAuth' -Name 'LastMobaIni' -ErrorAction SilentlyContinue).LastMobaIni } catch { }
@@ -113,10 +164,7 @@ function Find-MobaXtermIni([scriptblock]$Prompter){
 function Read-MobaSessions([string]$IniPath){
     $result = @()
     if(-not $IniPath){ return $result }
-    $enc = [Text.Encoding]::UTF8
-    $b = [IO.File]::ReadAllBytes($IniPath)
-    if($b.Length -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE){ $enc = [Text.Encoding]::Unicode }
-    $lines = [IO.File]::ReadAllLines($IniPath, $enc)
+    $lines = (Get-IniText $IniPath).Text -split "`r?`n"
     $section = ''
     for($i=0; $i -lt $lines.Count; $i++){
         $line = $lines[$i]
@@ -306,7 +354,21 @@ function Get-XshellStoredPasswords{
 }
 
 # ======================================================= 4. 密钥管理 =======
-function Ensure-SshKey{
+# $PrivateKey 指定则使用该私钥 (需无口令); 否则复用/生成 %USERPROFILE%\.ssh\id_ed25519
+function Ensure-SshKey([string]$PrivateKey){
+    if($PrivateKey){
+        if(-not (Test-Path -LiteralPath $PrivateKey)){ Err "private key not found: $PrivateKey"; return $null }
+        $priv = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($PrivateKey))
+        $pub  = "$priv.pub"
+        if(-not (Test-Path -LiteralPath $pub)){
+            try{ & ssh-keygen -y -f $priv 2>$null | Set-Content -Path $pub -Encoding ascii } catch { }
+        }
+        if(-not (Test-Path -LiteralPath $pub)){ Err "cannot derive public key for: $priv"; return $null }
+        $pubLine = (Get-Content -LiteralPath $pub | Where-Object { $_ -match '^(ssh-|ecdsa-)' } | Select-Object -First 1).Trim()
+        if(-not $pubLine){ Err "cannot read public key: $pub"; return $null }
+        Info "using specified private key: $priv"
+        return [pscustomobject]@{ Pri = $priv; Pub = $pub; PubLine = $pubLine }
+    }
     $sshDir = Join-Path $env:USERPROFILE '.ssh'
     if(-not (Test-Path $sshDir)){ New-Item -ItemType Directory -Path $sshDir -Force | Out-Null }
     $priv = Join-Path $sshDir 'id_ed25519'
@@ -370,31 +432,73 @@ function Install-PubKey([string]$Ip,[int]$Port,[string]$User,[string]$Password,[
 }
 
 # ============================================= 5. MobaXterm INI 配置 =======
-function Update-MobaIni([object[]]$Sessions, [string]$KeyRel){
+<#
+.SYNOPSIS
+  将目标 SSH 会话书签的私钥字段指向指定私钥, 并同步 [Misc] LastSession.
+  - 编码探测与保留 (UTF-8 BOM / UTF-16 LE / UTF-8 / ANSI)
+  - 变更前备份; 写入后回读校验
+  - $PrivateKey 为私钥绝对路径, %USERPROFILE% 下自动相对化为 _ProfileDir_\... 形式
+#>
+function Update-MobaIni([object[]]$Sessions, [string]$PrivateKey){
     $iniPath = $Sessions[0].IniPath
+    $mobaKey = ConvertTo-MobaKeyPath $PrivateKey
     $bak = "$iniPath.toolbak-$(Get-Date -Format yyyyMMdd-HHmmss)"
     Copy-Item $iniPath $bak -Force
     Ok "MobaXterm.ini backed up -> $bak"
-    $enc = [Text.Encoding]::UTF8
-    $b = [IO.File]::ReadAllBytes($iniPath)
-    if($b.Length -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE){ $enc = [Text.Encoding]::Unicode }
-    $lines = [IO.File]::ReadAllLines($iniPath, $enc)
+
+    $data = Get-IniText $iniPath
+    $sep = if($data.Text.IndexOf("`r`n") -ge 0){ "`r`n" } else { "`n" }
+    $lines = $data.Text -split "`r?`n"
+    $targetNames = @{}
+    foreach($s in $Sessions){ $targetNames[$s.Name] = $true }
+
+    $section = ''
     $changed = 0
-    foreach($s in $Sessions){
-        $line = $lines[$s.LineNo]
-        if($line -notmatch "^$([regex]::Escape($s.Name))="){ continue }
-        $val = ($line -split '=',2)[1]
-        $prefix = if($val -match '^\s'){ ' ' } else { '' }
-        $f = ($val.Trim()) -split '%'
-        if($f.Count -le 14){ continue }
-        if($f[14] -eq $KeyRel){ continue }
-        $f[14] = $KeyRel
-        $lines[$s.LineNo] = $s.Name + '=' + $prefix + ($f -join '%')
-        $changed++
+    for($i=0; $i -lt $lines.Count; $i++){
+        $line = $lines[$i]
+        if($line -match '^\s*\[(.+?)\]\s*$'){ $section = $Matches[1]; continue }
+        # 1) [Bookmarks*] 段中的目标会话行
+        if($section -like 'Bookmarks*' -and $line -match '^([^=]+)=(.*)$'){
+            $name = $Matches[1]
+            if($name -in @('SubRep','ImgNum')){ continue }
+            if(-not $targetNames.Contains($name)){ continue }
+            $val = $Matches[2]
+            $prefix = if($val -match '^\s'){ ' ' } else { '' }
+            $f = ($val.Trim()) -split '%'
+            if($f.Count -le 14){ continue }
+            if($f[0] -notmatch '^#109#\d+$'){ continue }
+            if($f[14] -ceq $mobaKey){ continue }
+            $oldKey = $f[14]; if(-not $oldKey){ $oldKey = '<none>' }
+            $f[14] = $mobaKey
+            $lines[$i] = $name + '=' + $prefix + ($f -join '%')
+            $changed++
+            Dim ("  -> {0}  key: {1} => {2}" -f $name, $oldKey, $mobaKey)
+        }
+        # 2) [Misc] LastSession 同步 (MobaXterm 启动时自动重开的会话)
+        elseif($line -match '^LastSession=(.+?)\|(#109#\d+%.*)$'){
+            $lsName = $Matches[1]; $lsStr = $Matches[2]
+            if($targetNames.Contains($lsName)){
+                $f = $lsStr -split '%'
+                if($f.Count -gt 14 -and $f[14] -cne $mobaKey){
+                    $f[14] = $mobaKey
+                    $lines[$i] = 'LastSession=' + $lsName + '|' + ($f -join '%')
+                    Dim "  -> LastSession ($lsName) synced"
+                }
+            }
+        }
     }
     if($changed -gt 0){
-        [IO.File]::WriteAllLines($iniPath, $lines, $enc)
-        Ok "MobaXterm.ini updated ($changed session(s) -> private key: $KeyRel)"
+        [IO.File]::WriteAllText($iniPath, ($lines -join $sep), $data.Encoding)
+        # 回读校验
+        $verify = Get-IniText $iniPath
+        $ok = 0
+        foreach($vl in ($verify.Text -split "`r?`n")){
+            if($vl -match '^[^=]+=\s*#109#\d+%'){
+                $vp = (($vl -split '=',2)[1].Trim()) -split '%'
+                if($vp.Count -gt 14 -and $vp[14] -ceq $mobaKey){ $ok++ }
+            }
+        }
+        Ok "MobaXterm.ini updated ($changed session(s) -> private key: $mobaKey; verify read-back: $ok session line(s) OK)"
     } else {
         Info "MobaXterm.ini: all target sessions already configured"
     }
@@ -538,6 +642,7 @@ function Invoke-PasswordlessSetup{
         [switch]$SkipServer,
         [switch]$SkipMoba,
         [switch]$SkipXshell,
+        [string]$PrivateKey,
         [scriptblock]$TargetSelector,
         [scriptblock]$PasswordPrompter,
         [scriptblock]$ConfirmPrompter,
@@ -602,7 +707,7 @@ function Invoke-PasswordlessSetup{
     Ok "targets: $($chosenIps -join ', ')"
 
     # --- 3. 密钥 ---
-    $key = Ensure-SshKey
+    $key = Ensure-SshKey $PrivateKey
     if(-not $key){ return $null }
     Ok "private key: $($key.Pri)"
     Info "public  key: $($key.PubLine.Substring(0,40))..."
@@ -705,7 +810,7 @@ function Invoke-PasswordlessSetup{
         }
         if(-not (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'MobaXterm*' })){
             $targets = @($mobaSessions | Where-Object { $chosenIps -contains $_.Host })
-            if($targets){ Update-MobaIni $targets '_ProfileDir_\.ssh\id_ed25519' | Out-Null }
+            if($targets){ Update-MobaIni $targets $key.Pri | Out-Null }
         }
     } elseif(-not $SkipMoba -and -not $mobaSessions) {
         Banner ""

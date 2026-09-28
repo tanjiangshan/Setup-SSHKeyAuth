@@ -146,7 +146,7 @@ function Finish-Action{
 
 # 功能一: 一键配置免密登录 (GUI 弹窗交互)
 $script:SetupBody = {
-    param($CorePath, $Sync, $TargetIps, $UserName, $SkipServer, $SkipMoba, $SkipXshell, $ForceCloseMoba)
+    param($CorePath, $Sync, $TargetIps, $UserName, $PrivateKey, $SkipServer, $SkipMoba, $SkipXshell, $ForceCloseMoba)
     try{
         . $CorePath
         Add-Type -AssemblyName System.Windows.Forms
@@ -261,7 +261,7 @@ $script:SetupBody = {
             return ([System.Windows.Forms.MessageBox]::Show($message, '确认', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question) -eq [System.Windows.Forms.DialogResult]::Yes)
         }
 
-        $report = Invoke-PasswordlessSetup -TargetIps $TargetIps -UserName $UserName `
+        $report = Invoke-PasswordlessSetup -TargetIps $TargetIps -UserName $UserName -PrivateKey $PrivateKey `
             -SkipServer:$SkipServer -SkipMoba:$SkipMoba -SkipXshell:$SkipXshell `
             -ForceCloseMoba $ForceCloseMoba `
             -TargetSelector $selector -PasswordPrompter $pwPrompter -ConfirmPrompter $confirmer -MobaIniPrompter $mobaIniPrompter
@@ -324,6 +324,7 @@ $script:BtnSetup.Add_Click({
         (Join-Path $PSScriptRoot 'Setup-SSHKeyAuthCore.ps1'), $script:Sync,
         $null,                # TargetIps
         $null,                # UserName
+        $null,                # PrivateKey (自动复用/生成 ~/.ssh/id_ed25519)
         $script:ChkSkipServer.Checked, $script:ChkSkipMoba.Checked, $script:ChkSkipXshell.Checked,
         $false                # ForceCloseMoba (弹窗确认)
     )
